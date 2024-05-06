@@ -1,0 +1,1310 @@
+---
+title: "sc_lab"
+author: "SIVA"
+date: "2024-05-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# install packages from bioconductor
+BiocManager::install("AnnotationHub")
+BiocManager::install("ensembldb")
+BiocManager::install("multtest")
+BiocManager::install("glmGamPoi")
+```
+
+This chunk of code involves the installation of specific bioinformatics packages from Bioconductor, which is a repository for bioinformatics software in R. Here's a brief overview of each package being installed:
+
+AnnotationHub: This package provides access to a vast repository of genomic annotations and resources, allowing users to fetch and use various annotation resources in their analyses.
+ensembldb: This package offers an API to create and use Ensembl-based annotation databases. The primary function is to provide easy access to Ensembl-generated datasets and annotations directly within R.
+multtest: Used for multiple hypothesis testing. It includes a variety of adjustments and methods to control for false discovery rates and family-wise error rates, commonly used in genomic data analyses.
+glmGamPoi: This package is useful for fitting generalized linear models (GLMs) to overdispersed count data, which is typical in genomic datasets such as RNA-seq.
+
+
+
+```{r}
+# install other packages from CRAN
+
+#install.packages("Matrix")
+#install.packages("RCurl") 
+#install.packages("scales")
+#install.packages("cowplot") 
+#install.packages("BiocManager")
+#install.packages("Seurat")
+#install.packages("metap")
+```
+
+This code snippet is prepared to install several important R packages from CRAN (The Comprehensive R Archive Network). Each line corresponds to a command to install a specific package, though they are commented out (#) meaning they will not execute unless uncommented. Here’s what each package generally provides:
+
+Matrix: Supports sparse and dense matrix operations.
+RCurl: Provides an interface to make HTTP requests which can be useful for accessing web-based data.
+scales: Useful for creating graphical scales, which help in visualization tasks to map data values to aesthetic dimensions.
+cowplot: Simplifies the process of creating multi-panel plots.
+BiocManager: Manages the installation of packages from Bioconductor.
+Seurat: A toolkit for single-cell genomics data analysis.
+metap: Offers methods for meta-analysis particularly in contexts involving multiple scientific studies.
+
+# But as I had this packages installed earlier I just gave this as comments 
+
+```{r}
+# load libraries
+
+library(Seurat)
+library(tidyverse)
+library(Matrix)
+library(RCurl)
+library(scales)
+library(cowplot)
+library(metap)
+library(AnnotationHub)
+library(ensembldb)
+library(multtest)
+library(glmGamPoi)
+```
+
+In this chunk, the library() function is used to load previously installed packages into the R session. This step is crucial as it makes the functions and data structures from these packages available for use in subsequent code. The packages loaded here are essential for data manipulation (tidyverse), single-cell analysis (Seurat), statistical testing (multtest, metap), data annotation (AnnotationHub, ensembldb), and handling complex data types (Matrix, scales).
+
+```{r}
+# Use for loop to create seurat objects for both samples
+for (file in c("ctrl_raw_feature_bc_matrix", "stim_raw_feature_bc_matrix")){
+        seurat_data <- Read10X(data.dir = paste0("data/", file))
+        seurat_obj <- CreateSeuratObject(counts = seurat_data, 
+                                         min.features = 100, 
+                                         project = file)
+        assign(file, seurat_obj)
+}
+```
+
+This code uses a for loop to automate the process of reading data and creating Seurat objects for two samples (ctrl_raw_feature_bc_matrix and stim_raw_feature_bc_matrix). Here's a step-by-step breakdown:
+
+Read10X: This function reads data stored in a format compatible with outputs from the 10X Genomics platform, commonly used in single-cell RNA sequencing.
+CreateSeuratObject: Constructs a Seurat object from the raw count data. It sets a minimum feature (gene) count of 100 to include a cell, thus filtering out cells with fewer detected genes to reduce noise.
+assign: Dynamically assigns each newly created Seurat object to a variable with the same name as the file, thus making ctrl_raw_feature_bc_matrix and stim_raw_feature_bc_matrix directly accessible for further analysis.
+
+Question: What is min.features and why min.features = 100?
+
+Min.features is a quality control feature that removes cells with poor quality by defining a minimum number of genes that must be detected. In this case, only cells with 100 or more detected genes are used for analysis. 
+
+
+
+```{r}
+# examine metadata
+
+head(ctrl_raw_feature_bc_matrix@meta.data)
+head(stim_raw_feature_bc_matrix@meta.data)
+```
+
+These two lines of code display the first few rows of the metadata for Seurat objects representing control and stimulated samples, respectively. The @meta.data accesses the metadata slot of the Seurat object, and head() function is used to print the first six entries. This is a typical initial step to inspect the data structure and contents, including variables like the number of detected genes, UMI counts, etc.
+
+
+Question: Report nCount_RNA and nFeature_RNA for 2nd idem from control count matrix
+* nCount_RNA = 3125
+* nFeature_RNA = 896
+
+```{r}
+# merge Seurat objects
+
+merged_seurat <- merge(x = ctrl_raw_feature_bc_matrix,
+                       y = stim_raw_feature_bc_matrix,
+                       add.cell.id = c("ctrl", "stim"))
+```
+
+This chunk merges two Seurat objects (ctrl_raw_feature_bc_matrix and stim_raw_feature_bc_matrix) into one. The add.cell.id parameter adds a prefix to the cell identifiers to distinguish between the two samples, aiding in later analyses that might require differentiation between control and stimulated samples.
+
+```{r}
+# examine metadata of merged object
+head(merged_seurat@meta.data)
+tail(merged_seurat@meta.data)
+```
+
+These commands are used to view the first and last six rows of the metadata in the merged Seurat object. This helps verify that the merging was successful and gives a sense of the combined dataset's metadata structure and range.
+
+
+```{r}
+# open the metadata in a new tab
+View(merged_seurat@meta.data)
+```
+
+This line of code opens the metadata of the merged Seurat object in a new tab or window in RStudio, providing a more interactive and comprehensive view of the metadata.
+
+
+```{r}
+# novelty score (# of genes per UMI for each cell)
+
+merged_seurat$log10GenesPerUMI <- log10(merged_seurat$nFeature_RNA) / log10(merged_seurat$nCount_RNA)
+```
+
+Here, a novelty score is calculated for each cell as the logarithm (base 10) of the number of genes per UMI (Unique Molecular Identifier), which is a proxy for transcriptional diversity or complexity within a cell. This metric can be useful in identifying cells with unusual transcriptional profiles.
+
+
+```{r}
+# add the percent of transcripts mapping to mitochondrial genes
+
+merged_seurat$mitoRatio <- PercentageFeatureSet(object = merged_seurat, pattern = "^MT-")
+merged_seurat$mitoRatio <- merged_seurat@meta.data$mitoRatio / 100
+```
+
+This code calculates the percentage of RNA transcripts in each cell that map to mitochondrial genes (identified by the prefix "MT-") and stores the result in the metadata. High mitochondrial content can be an indicator of cell stress or apoptosis.
+
+
+```{r}
+# make a dataframe of metadata
+
+metadata <- merged_seurat@meta.data
+```
+
+
+
+```{r}
+# Add cell IDs to metadata
+
+metadata$cells <- rownames(metadata)
+```
+
+
+
+```{r}
+# Add sample type column
+
+metadata$sample <- NA
+metadata$sample[which(str_detect(metadata$cells, "^ctrl_"))] <- "ctrl"
+metadata$sample[which(str_detect(metadata$cells, "^stim_"))] <- "stim"
+```
+
+
+
+
+```{r}
+# rename the columns
+
+metadata <- metadata %>%
+        dplyr::rename(seq_folder = orig.ident,
+                      nUMI = nCount_RNA,
+                      nGene = nFeature_RNA)
+```
+
+This sequence of operations first extracts the metadata into a separate DataFrame. It adds a new column for cell IDs (cells), initializes a new column (sample) to differentiate between control and stimulated samples based on cell ID patterns, and finally renames several columns using dplyr::rename for clarity and consistency in naming conventions.
+
+```{r}
+# add metadata back to seurat object and save as an RData object
+
+merged_seurat@meta.data <- metadata
+
+save(merged_seurat, file = "data/merged_filtered_seurat.RData")
+```
+
+Now, the updated metadata DataFrame is reassigned back to the @meta.data slot of the Seurat object. The entire Seurat object, now updated and possibly filtered, is saved to an RData file. This file can then be reloaded in future sessions to continue analysis without needing to redo previous preprocessing steps.
+
+
+```{r}
+# create bar chart of counts/sample
+
+metadata %>% 
+  	ggplot(aes(x=sample, fill=sample)) + 
+  	geom_bar() +
+  	theme_classic() +
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NCells")
+```
+
+This chunk generates a bar chart visualizing the number of cells per sample using ggplot2. The bar chart is styled with theme_classic() and additional theme modifications to improve readability of the x-axis labels and to center and embolden the plot title. This visual aid is useful for quickly assessing the distribution of cell counts across different samples.
+
+* The ctrl and stim samples have approximately equal number of counts. However, they both have more than expected, so there are likely low quality samples still in the mix. 
+
+```{r}
+# Plot UMIs/transcripts per cell as a density plot
+
+metadata %>% 
+  	ggplot(aes(color=sample, x=nUMI, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 500)
+```
+
+This code creates a density plot for UMIs per cell, highlighting variations between samples. It uses a log scale for the x-axis to better distribute the data points. The plot includes a vertical line at x = 500, which might serve as a threshold for identifying cells with low UMI counts. The density plot helps in evaluating the overall sequencing depth across samples.
+
+Most samples have > 1000 UMIs/cell, indicating that sequencing depth was good for most samples. 
+
+
+```{r}
+# Use density plot to show distribution of genes detected per cell
+
+metadata %>% 
+  	ggplot(aes(color=sample, x=nGene, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	theme_classic() +
+  	scale_x_log10() + 
+  	geom_vline(xintercept = 300)
+```
+This density plot visualizes the distribution of the number of genes detected per cell, again using a logarithmic scale. The vertical line at x = 300 may indicate a lower limit for acceptable gene detection per cell, aiding in quality control by identifying cells with potentially inadequate gene coverage.
+
+
+Most cells had >300 genes identified, indicating most were successfully sequenced. 
+
+```{r}
+# Use a density plot to show overall complexity of gene expression (novelty score)
+
+metadata %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = sample, fill=sample)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.8)
+```
+
+This plot uses a density distribution to visualize the 'novelty score' across cells. The vertical line at 0.8 could be an indicator of a threshold for acceptable complexity in gene expression within cells. The plot is helpful for assessing the transcriptional diversity within the samples.
+
+
+Most samples have a complexity score > 0.8, indicating most cells had a similar UMI and number of genes identified. This indicates good quality. 
+
+
+```{r}
+# Density plot of percent of mitochondrial genes
+
+metadata %>% 
+  	ggplot(aes(color=sample, x=mitoRatio, fill=sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 0.2)
+```
+
+This plot visualizes the proportion of mitochondrial genes detected in each cell, which is an important quality metric. High percentages of mitochondrial DNA can indicate cell stress or apoptosis. The vertical line at 0.2 (20%) serves as a quality control threshold.
+
+
+Most cells had between 1% and 10% mitochondrial genes identified in the transcripts. Since 20% mitochondrial genes is considered a cutoff for poor quality, all cells were below that threshold. 
+
+```{r}
+# Display correlation between genes detected and UMIs
+
+metadata %>% 
+  	ggplot(aes(x=nUMI, y=nGene, color=mitoRatio)) + 
+  	geom_point() + 
+	scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 250) +
+  	facet_wrap(~sample)
+```
+
+This scatter plot explores the correlation between the number of UMIs and genes detected per cell, colored by the proportion of mitochondrial DNA. The use of color gradients provides visual cues about mitochondrial content, and the plot is faceted by sample to separate patterns between control and stimulated conditions. The linear model fit (stat_smooth) helps in visualizing trends.
+
+
+Most genes fall within the category of high UMI and high number of genes identified, but there some that should be filtered out with either low UMI/high number of genes or vice versa, or low UMI and number of genes.
+
+
+```{r}
+# Filter low quality cells
+
+filtered_seurat <- subset(x = merged_seurat, 
+                         subset= (nUMI >= 500) & 
+                           (nGene >= 250) & 
+                           (log10GenesPerUMI > 0.80) & 
+                           (mitoRatio < 0.20))
+```
+This code filters out low-quality cells from a merged Seurat object based on several criteria: a minimum of 500 UMIs per cell, at least 250 genes detected per cell, a novelty score (log10 of genes per UMI) greater than 0.8, and less than 20% of transcripts mapping to mitochondrial genes. This step is crucial to ensure that subsequent analyses are performed on cells with sufficient and quality data.
+
+
+```{r}
+# Extract counts
+filtered_seurat <- JoinLayers(filtered_seurat)
+
+counts <- GetAssayData(object = filtered_seurat, slot = "counts")
+
+# Output logical matrix showing which genes have 0 count
+nonzero <- counts > 0
+```
+
+Here, JoinLayers is potentially used to merge multiple data layers in the Seurat object (if they exist), ensuring a unified dataset for further operations. The GetAssayData function retrieves the count data from the Seurat object, and the resulting matrix is processed to create a logical matrix (nonzero) indicating whether each gene is expressed in each cell.
+
+
+```{r}
+# Keep only genes expressed in 10 or more cells
+
+keep_genes <- Matrix::rowSums(nonzero) >= 10
+filtered_counts <- counts[keep_genes, ]
+
+# Reassign to filtered Seurat object
+filtered_seurat <- CreateSeuratObject(filtered_counts, meta.data = filtered_seurat@meta.data)
+```
+
+This code filters out genes that are expressed in fewer than 10 cells to reduce the noise and focus on more robustly detected genes. A new Seurat object is created from these filtered counts, carrying over the metadata from the previous object.
+
+```{r}
+ # Save filtered subset to new metadata
+ metadata_clean <- filtered_seurat@meta.data
+```
+
+This simple line extracts the metadata from the filtered Seurat object to a separate variable for easier access and manipulation.
+
+
+```{r}
+# recheck counts/sample using the filtered data
+
+metadata_clean %>% 
+  	ggplot(aes(x=sample, fill=sample)) + 
+  	geom_bar() +
+  	theme_classic() +
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NCells")
+```
+
+A bar chart is created to visualize the number of cells per sample after filtering, with styles applied for readability and aesthetics. This visualization helps assess the impact of filtering on the dataset.
+
+Not many samples were removed by filtering, but there are slightly fewer counts per sample type than before. 
+
+```{r}
+# Plot UMIs/transcripts per cell as a density plot using cleaned metadata
+
+metadata_clean %>% 
+  	ggplot(aes(color=sample, x=nUMI, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 500)
+```
+
+All samples have >500 UMI now, and the majority have >1000, which indicates excellent sequencing depth. 
+
+```{r}
+# Use density plot to show distribution of genes detected per cell
+
+metadata_clean %>% 
+  	ggplot(aes(color=sample, x=nGene, fill= sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	theme_classic() +
+  	scale_x_log10() + 
+  	geom_vline(xintercept = 300)
+```
+
+Very few samples have < 300 genes, so most samples have acceptable number of genes identified. 
+
+
+```{r}
+# Use a density plot to show overall complexity of gene expression (novelty score) using filtered data
+
+metadata_clean %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = sample, fill=sample)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.8)
+```
+A density plot shows the distribution of mitochondrial content across cells, confirming that it remains within acceptable levels. This is followed by a scatter plot examining the relationship between UMIs and gene counts, color-coded by mitochondrial content, which helps validate the effectiveness of the filtering criteria.
+
+
+
+All samples have > 0.8 complexity, indicated a good balance between UMI and number of genes identified in each sample. 
+
+
+```{r}
+# Density plot of percent of mitochondrial genes
+
+metadata_clean %>% 
+  	ggplot(aes(color=sample, x=mitoRatio, fill=sample)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 0.2)
+```
+
+These 4 plots use density distributions to visualize the distributions of UMIs per cell, the number of genes detected per cell, and the gene expression complexity (novelty score) in the cleaned metadata. They are valuable for assessing the quality of the dataset after filtering, confirming that remaining samples meet quality standards.
+
+
+The distribution of mitochondrial genes identified hasn't changed since all samples had an acceptable level of mitochondrial genes to begin with. 
+
+
+```{r}
+# Display correlation between genes detected and UMIs in the filtered dataset
+
+metadata_clean %>% 
+  	ggplot(aes(x=nUMI, y=nGene, color=mitoRatio)) + 
+  	geom_point() + 
+	scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 250) +
+  	facet_wrap(~sample)
+```
+
+
+Almost no samples fall outside the ideal quadrant in which samples have both high UMI and high number of genes identified. This indicates successful filtering. 
+
+```{r}
+# Create .RData object to load at any time
+save(filtered_seurat, file="data/seurat_filtered.RData")
+```
+
+Here the filtered Seurat object is saved as an RData file for easy reloading and further analysis in future sessions. This step ensures that the data, now cleaned and validated, can be easily accessed without needing to repeat the preprocessing steps.
+
+
+
+```{r}
+# Normalize counts
+
+seurat_phase <- NormalizeData(filtered_seurat)
+```
+
+This line of code applies a normalization method to the gene expression data within the filtered_seurat Seurat object to account for sequencing depth among samples. Normalization is essential for comparing gene expression across cells with varying total RNA content or sequencing depth.
+
+```{r}
+# Load cell cycle markers
+load("data/cycle.rda")
+```
+
+This command loads cell cycle genes from an R data file (cycle.rda). These markers are typically used to score cells based on their phase in the cell cycle, which is crucial for studies where cell cycle effects on gene expression are considered.
+
+
+```{r}
+# Score cells for cell cycle
+seurat_phase <- CellCycleScoring(seurat_phase, 
+                                 g2m.features = g2m_genes, 
+                                 s.features = s_genes)
+
+# View cell cycle scores and phases assigned to cells        
+View(seurat_phase@meta.data)
+```
+Cell cycle scoring assigns each cell a phase (G2/M or S) based on the expression of predefined gene sets (g2m_genes and s_genes). The scores and phases assigned to each cell are then viewed in the metadata of the Seurat object, helping identify and control for cell cycle effects in subsequent analyses.
+
+
+```{r}
+# Identify most variable genes
+seurat_phase <- FindVariableFeatures(seurat_phase, 
+                     selection.method = "vst",
+                     nfeatures = 2000, 
+                     verbose = FALSE)
+		     
+# Scale counts
+seurat_phase <- ScaleData(seurat_phase)
+```
+
+This set of commands identifies the most variable genes across the dataset using the variance stabilizing transformation (VST) method. It selects 2000 features that exhibit the most variation across the dataset, which are crucial for downstream analysis like dimensionality reduction. Scaling the data standardizes gene expression measurements for each gene across all cells.
+
+
+```{r}
+# Identify 15 most highly variable genes
+ranked_variable_genes <- VariableFeatures(seurat_phase)
+top_genes <- ranked_variable_genes[1:15]
+
+# Plot the avg expression and variance of these genes
+p <- VariableFeaturePlot(seurat_phase)
+LabelPoints(plot = p, points = top_genes, repel = TRUE)
+```
+These lines extract and plot the 15 most highly variable genes, providing a visual representation of their average expression and variance. The LabelPoints function adds labels to these points in the plot, improving readability and interpretability of the plot.
+
+
+```{r}
+# Run PCA
+seurat_phase <- RunPCA(seurat_phase)
+
+# Plot the PCA by cell cycle phase
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "Phase",
+        split.by = "Phase")
+```
+
+Principal Component Analysis (PCA) is executed to reduce dimensionality and visualize data in two-dimensional space. The DimPlot function then visualizes these PCA results, coloring and splitting data points according to their cell cycle phase, which shows that cell cycle phase does not significantly impact the variation observed.
+
+
+
+There is very little distance in distribution based on the cell cycle phase of the sample. This indicates that cell cycle does not have an effect on variation. 
+
+```{r}
+# Check quartile values
+summary(seurat_phase@meta.data$mitoRatio)
+
+# Turn mitoRatio into categorical factor vector based on quartile values
+seurat_phase@meta.data$mitoFr <- cut(seurat_phase@meta.data$mitoRatio, 
+                   breaks=c(-Inf, 0.0144, 0.0199, 0.0267, Inf), 
+                   labels=c("Low","Medium","Medium high", "High"))
+			
+```
+
+
+```{r}
+# Plot PCA grouped by no. of mitochondrial genes identified
+DimPlot(seurat_phase,
+        reduction = "pca",
+        group.by= "mitoFr",
+        split.by = "mitoFr")
+```
+
+This section categorizes cells based on their mitochondrial gene expression into quartiles and plots PCA results colored by these categories. The analysis suggests that mitochondrial gene content does not significantly affect the variation in the data.
+
+Based on above PCA, it does not appear that prevalence of mitochondrial genes has an affect on the data.
+
+```{r}
+# Split seurat object by condition to perform cell cycle scoring and SCT on all samples
+split_seurat <- SplitObject(seurat_phase, split.by = "sample")
+
+```
+
+This command splits the Seurat object into separate objects for each sample. This is often done before specific analyses that need to be run independently on each sample.
+
+
+```{r}
+for (i in 1:length(split_seurat)) {
+    split_seurat[[i]] <- SCTransform(split_seurat[[i]], vars.to.regress = c("mitoRatio"), vst.flavor = "v2")
+}
+```
+SCTransform is applied to each split object to normalize gene expression data while regressing out unwanted variation from mitochondrial content. This method is more robust to technical noise, enabling more accurate comparisons of gene expression levels.
+
+
+```{r}
+# Check which assays are stored in objects
+split_seurat$ctrl@assays
+```
+
+This line of code is used to check the assays stored within the ctrl subset of a split Seurat object. In the context of Seurat, an "assay" contains data for a specific type of measurement (like RNA sequencing data), along with transformations or analyses derived from that data, such as normalized counts or principal components. This command helps verify which data types and transformations are available for further analysis within the ctrl sample.
+
+
+```{r}
+# Save the split seurat object
+saveRDS(split_seurat, "data/split_seurat.rds")
+```
+
+This command saves the split Seurat object to a file in the RDS format. RDS files are useful for saving single R objects in a format that can be reloaded later. The saveRDS function is particularly handy for preserving the exact state of an R object, including a complex object like a Seurat object, which contains multiple datasets and analysis results. This ensures that all preprocessing, normalization, and analytical steps carried out up to this point are not lost, enabling the user to pick up exactly where they left off.
+
+
+```{r}
+# Load the split seurat object into the environment
+split_seurat <- readRDS("data/split_seurat.rds")
+```
+
+This line of code loads the previously saved Seurat object from the RDS file back into the R environment. Using readRDS, the complete Seurat object including all subsets (like ctrl, if multiple samples were split) and their corresponding assays and metadata are restored. This step is essential for continuity in data analysis, allowing for seamless transitions between sessions or sharing of data and results with colleagues.
+
+
+
+# Integration 
+
+```{r}
+## Don't run this during class
+# Select the most variable features to use for integration
+integ_features <- SelectIntegrationFeatures(object.list = split_seurat, 
+                                            nfeatures = 3000) 
+```
+
+This line of code selects the top 3000 most variable features across multiple Seurat objects stored in split_seurat. This selection is a critical step for data integration, ensuring that the features used to align different datasets capture the most informative aspects of the data. This function is typically used in preparation for integrating datasets from different conditions or batches to correct for technical differences without losing biological variance.
+
+
+
+```{r}
+# Load the split seurat object into the environment
+split_seurat <- readRDS("data/split_seurat.rds")
+```
+
+Here, the script reloads the split Seurat object from an RDS file. This step is common when resuming an analysis session or ensuring the object is in memory before proceeding with further analysis.
+
+
+```{r}
+## Don't run this during class
+# Prepare the SCT list object for integration
+split_seurat <- PrepSCTIntegration(object.list = split_seurat, 
+                                   anchor.features = integ_features)
+
+```
+
+PrepSCTIntegration prepares Seurat objects for integration using SCTransform-normalized data. It aligns the provided features (integ_features) across different datasets within split_seurat, facilitating more accurate integration by focusing on comparable features.
+
+```{r}
+## Don't run this during class
+# Find best buddies - can take a while to run
+integ_anchors <- FindIntegrationAnchors(object.list = split_seurat, 
+                                        normalization.method = "SCT", 
+                                        anchor.features = integ_features)
+```
+This command identifies "anchors" between datasets in the list of Seurat objects. Anchors are pairs of cells from different datasets that are identified as corresponding to the same biological state. These anchors are crucial for merging or integrating datasets without introducing batch effects, using the SCTransform normalization method.
+
+
+```{r}
+## Don't run this during class
+# Integrate across conditions
+seurat_integrated <- IntegrateData(anchorset = integ_anchors, 
+                                   normalization.method = "SCT")
+```
+
+IntegrateData uses the previously found anchors to integrate the data across different conditions, normalizing the data using the SCT method. This results in a new Seurat object where data from different samples or conditions are harmonized into a single analytical framework.
+
+
+```{r}
+# Run PCA
+seurat_integrated <- RunPCA(object = seurat_integrated)
+
+# Plot PCA
+PCAPlot(seurat_integrated,
+        split.by = "sample")  
+```
+
+Principal Component Analysis (PCA) is performed on the integrated data, followed by plotting the PCA results. Splitting by "sample" allows visualization of the principal components while distinguishing between different samples or conditions.
+
+```{r}
+# Set seed
+set.seed(123456)
+
+# Run UMAP
+seurat_integrated <- RunUMAP(seurat_integrated, 
+                             dims = 1:40,
+			     reduction = "pca")
+
+# Plot UMAP                             
+DimPlot(seurat_integrated)                        
+
+```
+A seed is set for reproducibility, then UMAP (Uniform Manifold Approximation and Projection) is run to reduce dimensionality further, using dimensions derived from PCA. The DimPlot function visualizes the UMAP results, both as a combined plot and split by sample to highlight differences and similarities in cellular states across conditions.
+
+
+
+```{r}
+# Plot UMAP split by sample
+DimPlot(seurat_integrated,
+        split.by = "sample")  
+```
+
+
+
+
+```{r}
+# Save integrated seurat object
+saveRDS(seurat_integrated, "results/integrated_seurat.rds")
+```
+
+
+Finally, the fully integrated and analyzed Seurat object is saved in an RDS file. This step preserves all the transformations and analyses performed, facilitating future retrieval and analysis without repeating the integration process.
+
+
+
+
+# Single-cell RNA-seq - clustering
+
+
+```{r}
+# Load libraries
+library(Seurat)
+library(tidyverse)
+library(RCurl)
+library(cowplot)
+```
+This chunk loads the required R libraries for the analysis:
+
+Seurat: For single-cell genomics data analysis.
+tidyverse: A collection of R packages for data manipulation and visualization.
+RCurl: Useful for network (HTTP, FTP) requests.
+cowplot: Enhances ggplot2 for better plot layout management.
+
+
+
+```{r}
+# Explore heatmap of PCs
+DimHeatmap(seurat_integrated, 
+           dims = 1:9, 
+           cells = 500, 
+           balanced = TRUE)
+```
+This command generates a heatmap for the first 9 principal components (PCs) of the integrated Seurat object. The heatmap displays the gene expression patterns that contribute to each principal component across a balanced subset of 500 cells. It helps to visually assess which genes and PCs capture significant sources of variation within the dataset.
+
+
+```{r}
+# Printing out the most variable genes driving PCs
+print(x = seurat_integrated[["pca"]], 
+      dims = 1:10, 
+      nfeatures = 5)
+```
+This line prints the top 5 features (genes) that contribute most to each of the first 10 principal components within the PCA results of the Seurat object. Understanding these genes can provide insights into the biological processes driving the variation observed across the cells.
+
+
+```{r}
+# Plot the elbow plot
+ElbowPlot(object = seurat_integrated, 
+          ndims = 40)
+
+```
+The Elbow Plot visualizes the variance explained by each principal component (up to 40 in this case). It's used to determine the number of PCs to consider in further analyses (e.g., clustering), typically by identifying the point where the marginal gain in explained variance drops off — the "elbow."
+
+
+
+
+```{r}
+# Determine the K-nearest neighbor graph
+seurat_integrated <- FindNeighbors(object = seurat_integrated, 
+                                dims = 1:40)
+```
+FindNeighbors computes the k-nearest neighbors for each cell based on their PCA scores, using the first 40 principal components. This step constructs a graph that represents the cellular similarity based on their expression profiles, essential for the clustering step that follows.
+
+
+```{r}
+# Determine the clusters for various resolutions                                
+seurat_integrated <- FindClusters(object = seurat_integrated,
+                               resolution = c(0.4, 0.6, 0.8, 1.0, 1.4))
+```
+
+This function applies a graph-based clustering approach using the Louvain algorithm at multiple resolution parameters (0.4 to 1.4). Higher resolutions tend to identify more and smaller clusters. This allows the identification of potentially subtle cellular states or types across different biological conditions.
+
+```{r}
+# Explore resolutions
+seurat_integrated@meta.data %>% 
+        View()
+```
+This command opens a view to inspect the meta.data slot of the Seurat object, where the results of the clustering at different resolutions are stored. This step is useful for comparing how cluster assignments change with different resolution parameters.
+
+
+```{r}
+# Assign identity of clusters
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.8"
+```
+
+
+
+```{r}
+# Plot the UMAP
+DimPlot(seurat_integrated,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6)
+```
+These chunks of code assign cluster identities to cells based on the clustering result at specified resolutions (0.8, 0.4, repeated 0.8), and then visualize these clusters using UMAP (Uniform Manifold Approximation and Projection), which provides a 2D representation of the data. The plots are labeled with cluster IDs to facilitate interpretation of the data.
+
+
+
+
+```{r}
+# Assign identity of clusters
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.4"
+
+# Plot the UMAP
+DimPlot(seurat_integrated,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6)
+
+```
+Assigning Cluster Identities: The Idents() function is used to set the active identity classes of cells in the seurat_integrated object to the clusters identified at a resolution parameter of 0.4. This is specified by setting the identities to "integrated_snn_res.0.4", which refers to a column in the meta.data of the Seurat object where these cluster labels are stored.
+
+UMAP Visualization: The DimPlot() function is then called to generate a UMAP plot, which is a two-dimensional visualization that helps in observing the data's underlying structure. Here, clusters are labeled, and the label size is adjusted for clarity.
+
+
+
+```{r}
+# Assign identity of clusters
+Idents(object = seurat_integrated) <- "integrated_snn_res.0.8"
+
+# Plot the UMAP
+DimPlot(seurat_integrated,
+        reduction = "umap",
+        label = TRUE,
+        label.size = 6)
+```
+Assigning Cluster Identities: Similar to the previous block, but now setting the cell identities to the clusters found at a higher resolution of 0.8. Using a higher resolution often results in a more granular clustering, potentially revealing more subtle biological distinctions among cells.
+
+UMAP Visualization: Again, a UMAP plot is generated to visualize these finer clusters, with settings identical to the previous plot to maintain consistency in visualization.
+
+
+
+# Clustering analysus 
+
+```{r}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells <- FetchData(seurat_integrated, 
+                     vars = c("ident", "sample")) %>%
+        dplyr::count(ident, sample)
+
+# Barplot of number of cells per cluster by sample
+ggplot(n_cells, aes(x=ident, y=n, fill=sample)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_text(aes(label=n), vjust = -.2, position=position_dodge(1))
+
+```
+
+This code extracts cluster and sample identifiers from the Seurat object metadata, counts the number of cells per cluster and sample, and visualizes this information using a barplot. The barplot distinguishes clusters and samples by color and provides exact cell counts on each bar for clarity.
+
+
+```{r}
+# UMAP of cells in each cluster by sample
+DimPlot(seurat_integrated, 
+        label = TRUE, 
+        split.by = "sample")  + NoLegend()
+```
+
+Here, a UMAP plot is generated and split by sample to visually assess the distribution of clusters within each sample, improving the understanding of sample-specific clustering patterns.
+
+
+```{r}
+# Barplot of proportion of cells in each cluster by sample
+ggplot(seurat_integrated@meta.data) +
+    geom_bar(aes(x=integrated_snn_res.0.8, fill=sample), position=position_fill()) 
+```
+
+This barplot shows the proportion of cells from each sample within each cluster, facilitating comparisons of cluster compositions across samples.
+
+```{r}
+# Explore whether clusters segregate by cell cycle phase
+DimPlot(seurat_integrated,
+        label = TRUE, 
+        split.by = "Phase")  + NoLegend()
+```
+Using UMAP, this plot examines how cells from different cell cycle phases segregate within the dataset, helping identify phase-specific clustering or integration issues.
+
+
+```{r}
+ # Determine metrics to plot present in seurat_integrated@meta.data
+metrics <-  c("nUMI", "nGene", "S.Score", "G2M.Score", "mitoRatio")
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = metrics,
+            pt.size = 0.4, 
+            order = TRUE,
+            min.cutoff = 'q10',
+            label = TRUE)
+
+```
+This series of feature plots maps various metrics (e.g., gene counts, mitochondrial content) onto UMAP coordinates to observe their distribution across cells, aiding in the identification of patterns or outliers in the data.
+
+
+```{r}
+# Boxplot of nGene per cluster
+ggplot(seurat_integrated@meta.data) +
+    geom_boxplot(aes(x=integrated_snn_res.0.8, y=nGene, fill=integrated_snn_res.0.8)) +
+    NoLegend()
+```
+This boxplot displays the distribution of gene counts across clusters, helping assess the variability within and between clusters regarding transcriptional activity.
+
+```{r}
+# Define the columns to extract, including PCA and UMAP dimensions
+columns <- c(paste0("PC_", 1:16),
+            "ident",
+            "UMAP_1", "UMAP_2")
+
+# Try fetching the data
+pc_data <- tryCatch({
+  FetchData(seurat_integrated, vars = columns)
+}, warning = function(w) {
+  # Handle the case where UMAP dimensions might be named differently
+  message("Warning handled: Adjusting UMAP dimension names and retrying FetchData.")
+  columns <- c(paste0("PC_", 1:16),
+               "ident",
+               paste0("UMAP_", 1:2))
+  FetchData(seurat_integrated, vars = columns)
+})
+
+# Output the data
+print(pc_data)
+                     
+```
+This chunk defines columns to extract PCA and UMAP dimensions from the Seurat object and uses tryCatch to handle potential errors, such as mismatches in UMAP dimension names. The data is fetched with FetchData, and adjusted if needed, providing a flexible way to ensure the correct data is retrieved.
+
+
+```{r}
+# Extract the UMAP coordinates for the first 10 cells
+seurat_integrated@reductions$umap@cell.embeddings[1:10, 1:2]
+```
+This line directly accesses the UMAP coordinates for the first 10 cells from the Seurat object, which can be useful for quick checks or specific analyses of a subset of data.
+
+
+```{r}
+# Fetching UMAP data
+umap_dims <- colnames(Embeddings(seurat_integrated, "umap"))
+umap_label <- FetchData(seurat_integrated, vars = c("ident", umap_dims[1], umap_dims[2]))
+pc_data <- FetchData(seurat_integrated, vars = c(umap_dims[1], umap_dims[2], paste0("PC_", 1:16)))
+
+# Calculate the cluster centers
+umap_label <- umap_label %>%
+  group_by(ident) %>%
+  summarise(x = mean(!!sym(umap_dims[1])), y = mean(!!sym(umap_dims[2])), .groups = "drop")
+
+# Plot UMAPs colored by each PC
+plot_list <- map(paste0("PC_", 1:16), function(pc) {
+  ggplot(pc_data, aes(x = .data[[umap_dims[1]]], y = .data[[umap_dims[2]]])) +
+    geom_point(aes(color = .data[[pc]]), alpha = 0.7) +
+    scale_color_gradient(guide = FALSE, low = "grey90", high = "blue") +
+    geom_text(data = umap_label, aes(label = ident, x = x, y = y), check_overlap = TRUE) +
+    ggtitle(pc)
+})
+
+# Combine all plots into a grid
+plot_grid(plotlist = plot_list)
+
+```
+
+This comprehensive chunk fetches UMAP and PCA data, computes cluster centers, and plots UMAPs colored by each principal component. It demonstrates advanced data manipulation and visualization techniques, providing insights into the data structure and variance explained by each principal component.
+
+
+```{r}
+# Examine PCA results 
+print(seurat_integrated[["pca"]], dims = 1:5, nfeatures = 5)
+```
+This command prints the results of a principal component analysis (PCA), specifically the top 5 features (genes) that contribute most to each of the first 5 principal components. This helps in identifying the genes that drive most of the variation in the dataset, which can be critical for understanding underlying biological processes or for further dimensionality reduction and clustering.
+
+
+```{r}
+DimPlot(object = seurat_integrated, 
+        reduction = "umap", 
+        label = TRUE) + NoLegend()
+```
+This line of code generates a UMAP plot from the seurat_integrated Seurat object. UMAP is used for dimensionality reduction and visualization of the cell clusters. The NoLegend() function call removes the legend from the plot to focus purely on the data visualization, enhancing clarity when the legend is unnecessary or cluttered.
+
+
+```{r}
+# Select the RNA counts slot to be the default assay
+DefaultAssay(seurat_integrated) <- "RNA"
+
+# Normalize RNA data for visualization purposes
+seurat_integrated <- NormalizeData(seurat_integrated, verbose = FALSE)
+```
+
+These commands first set the default assay in the Seurat object to "RNA," which is typically used for storing raw or normalized RNA counts. The NormalizeData function then normalizes the RNA data, which is essential for downstream analyses like feature plotting, ensuring that data are comparable across different cells.
+
+```{r}
+# CD14+ monocyte markers
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("CD14", "LYZ"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+This command and similar ones that follow use FeaturePlot to visualize the expression of markers specific to various cell types (e.g., CD14+ monocytes, FCGR3A+ monocytes, macrophages, conventional dendritic cells, and plasmacytoid dendritic cells) on the UMAP plot. Parameters such as order = TRUE and min.cutoff = 'q10' are used to order cells based on expression and set a minimum cutoff for expression at the 10th percentile, respectively. Labeling each cell by its expression level aids in identifying where these cells are predominantly located within the UMAP plot.
+
+
+```{r}
+# FCGR3A+ monocyte markers
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("FCGR3A", "MS4A7"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+This chunk visualizes the expression of FCGR3A and MS4A7, markers for FCGR3A+ monocytes, on a UMAP plot. The min.cutoff = 'q10' sets the expression threshold at the 10th percentile, helping to focus on cells where these markers are notably expressed. order = TRUE arranges the features in the plot based on expression levels, and label = TRUE adds gene labels to the plot for clarity.
+
+
+```{r}
+# Macrophages
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("MARCO", "ITGAM", "ADGRE1"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+
+```
+
+Similarly, this code plots the expression of macrophage markers (MARCO, ITGAM, ADGRE1) on UMAP. The settings ensure that only cells with significant expression levels are highlighted, aiding in the identification of macrophage populations.
+
+
+```{r}
+# Conventional dendritic cell markers
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("FCER1A", "CST3"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+This chunk focuses on markers for conventional dendritic cells, using FCER1A and CST3. The visualization parameters are consistent with previous plots, ensuring uniformity in how data is presented and interpreted.
+
+
+```{r}
+# Plasmacytoid dendritic cell markers
+
+FeaturePlot(seurat_integrated, 
+            reduction = "umap", 
+            features = c("IL3RA", "GZMB", "SERPINF1", "ITM2C"), 
+            order = TRUE,
+            min.cutoff = 'q10', 
+            label = TRUE)
+```
+
+This plot displays markers for plasmacytoid dendritic cells, including IL3RA, GZMB, SERPINF1, and ITM2C. The use of multiple markers helps define these cells more precisely within the dataset.
+
+```{r}
+# List of known celltype markers
+markers <- list()
+markers[["CD14+ monocytes"]] <- c("CD14", "LYZ")
+markers[["FCGR3A+ monocyte"]] <- c("FCGR3A", "MS4A7")
+markers[["Macrophages"]] <- c("MARCO", "ITGAM", "ADGRE1")
+markers[["Conventional dendritic"]] <- c("FCER1A", "CST3")
+markers[["Plasmacytoid dendritic"]] <- c("IL3RA", "GZMB", "SERPINF1", "ITM2C")
+
+# Create dotplot based on RNA expression
+DotPlot(seurat_integrated, markers, assay="RNA")
+
+```
+
+
+This final chunk compiles a list of markers for various cell types and then creates a dot plot to compare their expression across different cell types in the dataset. The DotPlot function is particularly useful for displaying the expression level and percentage of cells expressing each marker within each cell type, providing a compact and informative summary of the marker genes.
+
+
+# Marker Identification 
+
+```{r}
+seurat_integrated <- JoinLayers(seurat_integrated)
+
+cluster0_conserved_markers <- FindConservedMarkers(seurat_integrated,
+                              ident.1 = 0,
+                     	      grouping.var = "sample",
+                              only.pos = TRUE,
+		              logfc.threshold = 0.25)
+
+
+```
+JoinLayers: This function merges data layers in a Seurat object, which can be useful when dealing with multi-assay data.
+FindConservedMarkers: Identifies markers that are consistently expressed in a specified cluster (here, cluster 0), considering samples as a grouping variable. It focuses on markers that are positively expressed (only.pos = TRUE) with a minimum log fold change.
+
+```{r}
+
+annotations <- read.csv("data/annotation.csv")
+
+# Combine markers with gene descriptions 
+cluster0_ann_markers <- cluster0_conserved_markers %>% 
+                rownames_to_column(var="gene") %>% 
+                left_join(y = unique(annotations[, c("gene_name", "description")]),
+                          by = c("gene" = "gene_name"))
+
+View(cluster0_ann_markers)
+
+```
+
+Reads gene annotations from a CSV file and merges these with the conserved markers based on gene names, enhancing the marker data with descriptive annotations.
+
+
+```{r}
+# Create function to get conserved markers for any given cluster
+get_conserved <- function(cluster){
+  FindConservedMarkers(seurat_integrated,
+                       ident.1 = cluster,
+                       grouping.var = "sample",
+                       only.pos = TRUE) %>%
+    rownames_to_column(var = "gene") %>%
+    left_join(y = unique(annotations[, c("gene_name", "description")]),
+               by = c("gene" = "gene_name")) %>%
+    cbind(cluster_id = cluster, .)
+  }
+```
+
+This function, get_conserved, is designed to identify markers that are consistently expressed within a specified cluster across different samples. It integrates additional annotations for each gene, providing a more comprehensive view of the marker genes.
+
+
+```{r}
+# Iterate function across desired clusters
+conserved_markers <- map_dfr(c(4,0,6,2), get_conserved) 
+```
+This line uses the map_dfr function from the purrr package to apply get_conserved across selected clusters (4, 0, 6, and 2), compiling the results into a single dataframe. This approach streamlines the analysis across multiple clusters.
+
+
+```{r}
+# Extract top 10 markers per cluster
+top10 <- conserved_markers %>% 
+  mutate(avg_fc = (ctrl_avg_log2FC + stim_avg_log2FC) /2) %>% 
+  group_by(cluster_id) %>% 
+  top_n(n = 10, 
+        wt = avg_fc)
+
+# Visualize top 10 markers per cluster
+View(top10)
+
+```
+
+Here, the average log fold change is calculated for each gene across control and stimulated conditions, and the top 10 genes by this metric are selected for each cluster. The View function is used for easy inspection of these top markers.
+
+
+```{r}
+# Plot interesting marker gene expression for cluster 4
+FeaturePlot(object = seurat_integrated, 
+                        features = c("HSPH1", "HSPE1", "DNAJB1"),
+                         order = TRUE,
+                         min.cutoff = 'q10', 
+                         label = TRUE,
+			 repel = TRUE)
+
+```
+This script generates UMAP plots showing the distribution of selected gene markers, enhancing the plot with labels and adjusting the visibility of markers using the min.cutoff parameter.
+
+
+
+```{r}
+# Vln plot - cluster 4
+VlnPlot(object = seurat_integrated, 
+        features = c("HSPH1", "HSPE1", "DNAJB1"))
+
+```
+
+
+Violin plots provide a more detailed view of the distribution of expression levels for the same markers across different cells.
+
+
+```{r}
+
+# Determine differentiating markers for CD4+ T cell
+cd4_tcells <- FindMarkers(seurat_integrated,
+                          ident.1 = 2,
+                          ident.2 = c(0,4,6))                  
+
+# Add gene symbols to the DE table
+cd4_tcells <- cd4_tcells %>%
+  rownames_to_column(var = "gene") %>%
+  left_join(y = unique(annotations[, c("gene_name", "description")]),
+             by = c("gene" = "gene_name"))
+
+# Reorder columns and sort by padj      
+cd4_tcells <- cd4_tcells[, c(1, 3:5,2,6:7)]
+
+cd4_tcells <- cd4_tcells %>%
+  dplyr::arrange(p_val_adj) 
+
+# View data
+View(cd4_tcells)
+
+```
+
+This sequence identifies differential expression markers between CD4+ T cells (cluster 2) and other cell types (clusters 0, 4, 6). The results are then enriched with gene annotations, reorganized, and sorted by adjusted p-value for clarity and focus on significant results. The View() function is used to display the sorted table, allowing for interactive exploration of the data.
+
+```{r}
+# Rename all identities
+seurat_integrated <- RenameIdents(object = seurat_integrated, 
+                               "0" = "Naive or memory CD4+ T cells",
+                               "1" = "CD14+ monocytes",
+                               "2" = "Activated T cells",
+                               "3" = "CD14+ monocytes",
+                               "4" = "Stressed cells / Unknown",
+                               "5" = "CD8+ T cells",
+                               "6" = "Naive or memory CD4+ T cells",
+                               "7" = "B cells",
+                               "8" = "NK cells",
+                               "9" = "CD8+ T cells",
+                               "10" = "FCGR3A+ monocytes",
+                               "11" = "B cells",
+                               "12" = "NK cells",
+                               "13" = "B cells",
+                               "14" = "Conventional dendritic cells",
+                               "15" = "Megakaryocytes",
+			       "16" = "Plasmacytoid dendritic cells")
+
+
+# Plot the UMAP
+DimPlot(object = seurat_integrated, 
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 3,
+        repel = TRUE)
+
+```
+
+Cluster identities within the Seurat object are renamed for clearer biological interpretation, followed by generating a UMAP plot to visualize these clusters with their new names. The repel parameter helps avoid label overlap, enhancing plot readability.
+
+```{r}
+# Remove the stressed or dying cells
+seurat_subset_labeled <- subset(seurat_integrated,
+                               idents = "Stressed cells / Unknown", invert = TRUE)
+
+# Re-visualize the clusters
+DimPlot(object = seurat_subset_labeled, 
+        reduction = "umap", 
+        label = TRUE,
+        label.size = 3,
+	repel = TRUE)
+
+```
+
+This block filters out stressed or dying cells from the analysis to focus on healthy or more biologically relevant cells. A UMAP plot of the filtered dataset is then created to reassess the data without these cells.
+
+```{r}
+# Save final R object
+write_rds(seurat_integrated,
+          file = "results/seurat_labelled.rds")
+
+# Create and save a text file with sessionInfo
+sink("sessionInfo_scrnaseq_Feb2023.txt")
+sessionInfo()
+sink()
+
+```
+
+The integrated Seurat object is saved for future use, and session information, which includes details about the R environment and loaded packages, is saved to a text file. This is important for reproducibility and documentation.
+
+```{r}
+# Add celltype annotation as a column in meta.data 
+seurat_subset_labeled$celltype <- Idents(seurat_subset_labeled)
+
+# Compute number of cells per celltype
+n_cells <- FetchData(seurat_subset_labeled, 
+                     vars = c("celltype", "sample")) %>%
+        dplyr::count(celltype, sample)
+
+# Barplot of number of cells per celltype by sample
+ggplot(n_cells, aes(x=celltype, y=n, fill=sample)) +
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_text(aes(label=n), vjust = -.2, position=position_dodge(1))
+
+```
+
+In this code:
+
+Cell Type Annotation: The Idents() function from Seurat is used to fetch the identities (e.g., cell types) assigned during clustering and store them in the meta.data of a Seurat object as a new column named celltype.
+Data Fetching: FetchData() retrieves the celltype and sample information for each cell.
+Visualization: A bar plot is created using ggplot2, showing the number of cells per cell type for each sample. The plot uses dodging to separate bars by sample within each cell type category and includes text labels displaying the count of cells.
+
+
+```{r}
+# Ensure that identities are correctly assigned in the Seurat object
+Idents(seurat_subset_labeled) <- seurat_subset_labeled$sample
+
+# Subset seurat object to just B cells
+seurat_b_cells <- subset(seurat_subset_labeled, subset = (celltype == "B cells"))
+
+# Run a wilcox test to compare ctrl vs stim
+b_markers <- FindMarkers(seurat_b_cells,
+                          ident.1 = "ctrl",
+                          ident.2 = "stim",
+                          logfc.threshold = 0.25)
+```
+
+Here:
+
+Identity Assignment: The identities of cells in the Seurat object are reassigned to reflect their sample designation. This is likely done to prepare for sample-based operations or analyses.
+Subsetting for B Cells: The dataset is filtered to include only cells identified as "B cells".
+Differential Expression Testing: FindMarkers() performs a Wilcoxon rank sum test to find genes differentially expressed between control (ctrl) and stimulated (stim) B cells, using a log fold change threshold of 0.25. This helps identify genes that are significantly up- or down-regulated due to stimulation in B cells.
+
+
+
+```{r}
+library(EnhancedVolcano)
+EnhancedVolcano(b_markers,
+    row.names(b_markers),
+    x="avg_log2FC",
+    y="p_val_adj"
+)
+```
+
+
+In this final chunk:
+
+EnhancedVolcano: After loading the EnhancedVolcano library, which is designed to create informative volcano plots, the function is called with the differential expression results. The plot maps average log2 fold change (x-axis) against adjusted p-values (y-axis), providing a visual summary of genes that are statistically significant and biologically relevant based on their expression changes.
+
+
+
+
+
+
+# My Github account link 
+
+https://github.com/SivasankarAnnamalaiSharavanan 
